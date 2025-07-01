@@ -8,10 +8,15 @@ import {
   Maximize, 
   Minimize, 
   Shield,
-  Lock,
+  Share2,
+  Copy,
+  ExternalLink,
+  AlertTriangle,
+  CheckCircle,
+  Link,
+  Download,
   Eye,
-  EyeOff,
-  AlertTriangle
+  EyeOff
 } from 'lucide-react';
 
 interface PlayerState {
@@ -24,93 +29,137 @@ interface PlayerState {
   isMuted: boolean;
   isFullscreen: boolean;
   showControls: boolean;
-  isProtected: boolean;
   blobUrl: string | null;
 }
 
-interface SecurityConfig {
-  allowedDomains: string[];
-  allowedReferrers: string[];
-  enableDomainCheck: boolean;
-  enableReferrerCheck: boolean;
-  enableRightClickProtection: boolean;
-  enableDevToolsProtection: boolean;
-  enableCopyProtection: boolean;
+interface ShareableLink {
+  token: string;
+  url: string;
+  createdAt: Date;
 }
 
 function App() {
-  const [url, setUrl] = useState('');
+  const [mediaUrl, setMediaUrl] = useState('');
   const [player, setPlayer] = useState<PlayerState | null>(null);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [showSecuritySettings, setShowSecuritySettings] = useState(false);
-  const [securityConfig, setSecurityConfig] = useState<SecurityConfig>({
-    allowedDomains: ['localhost', '127.0.0.1'],
-    allowedReferrers: [],
-    enableDomainCheck: false,
-    enableReferrerCheck: false,
-    enableRightClickProtection: true,
-    enableDevToolsProtection: true,
-    enableCopyProtection: true
-  });
+  const [shareableLink, setShareableLink] = useState<ShareableLink | null>(null);
+  const [showShareSection, setShowShareSection] = useState(false);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<HTMLDivElement>(null);
   const controlsTimeoutRef = useRef<NodeJS.Timeout>();
 
-  // Security functions
-  const encodeUrl = (url: string): string => {
-    return btoa(url);
-  };
-
-  const decodeUrl = (encodedUrl: string): string => {
-    try {
-      return atob(encodedUrl);
-    } catch {
-      throw new Error('URL inválida');
-    }
-  };
-
-  const checkDomainSecurity = (): boolean => {
-    if (!securityConfig.enableDomainCheck) return true;
+  // Check URL parameters on component mount
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    const media = urlParams.get('media');
     
-    const currentDomain = window.location.hostname;
-    return securityConfig.allowedDomains.includes(currentDomain);
-  };
-
-  const checkReferrerSecurity = (): boolean => {
-    if (!securityConfig.enableReferrerCheck) return true;
-    
-    const referrer = document.referrer;
-    if (!referrer && securityConfig.allowedReferrers.length > 0) return false;
-    
-    return securityConfig.allowedReferrers.some(allowed => 
-      referrer.startsWith(allowed)
-    );
-  };
-
-  const createProtectedBlob = async (url: string): Promise<string> => {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error('Falha ao carregar o vídeo');
+    if (token && media) {
+      try {
+        const decodedUrl = atob(media);
+        setMediaUrl(decodedUrl);
+        loadMediaFromUrl(decodedUrl, token);
+      } catch (e) {
+        setError('Link compartilhado inválido');
       }
-      
-      const blob = await response.blob();
-      return URL.createObjectURL(blob);
-    } catch (error) {
-      throw new Error('Erro ao criar blob protegido');
     }
+  }, []);
+
+  const generateToken = (): string => {
+    return 'token-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now().toString(36);
   };
 
-  const isValidDirectLink = (url: string): boolean => {
-    return /\.(mp3|mp4|wav|ogg|webm|flac|m4a|avi|mov)$/i.test(url);
+  const isValidMediaUrl = (url: string): boolean => {
+    const validExtensions = ['.mp4', '.mp3', '.webm', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.m4v'];
+    return validExtensions.some(ext => url.toLowerCase().includes(ext)) &&
+           (url.includes('mediafire.com') || url.includes('drive.google.com') || url.startsWith('http'));
   };
 
   const extractFileName = (url: string): string => {
     const urlParts = url.split('/');
     const lastPart = urlParts[urlParts.length - 1];
-    return decodeURIComponent(lastPart.split('?')[0]);
+    const fileName = decodeURIComponent(lastPart.split('?')[0]);
+    return fileName || 'Mídia sem nome';
+  };
+
+  const createProtectedBlob = async (url: string): Promise<string> => {
+    try {
+      const response = await fetch(url, {
+        mode: 'cors',
+        credentials: 'omit'
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Erro HTTP: ${response.status}`);
+      }
+      
+      const blob = await response.blob();
+      return URL.createObjectURL(blob);
+    } catch (error) {
+      throw new Error('Erro ao carregar mídia. Verifique se o link está correto e acessível.');
+    }
+  };
+
+  const loadMediaFromUrl = async (url: string, existingToken?: string) => {
+    setError('');
+    setSuccess('');
+    
+    if (!url.trim()) {
+      setError('Por favor, insira um URL válido');
+      return;
+    }
+
+    if (!isValidMediaUrl(url)) {
+      setError('URL inválido. Certifique-se que é um link direto para um arquivo de mídia.');
+      return;
+    }
+
+    setIsLoading(true);
+    
+    try {
+      const fileName = extractFileName(url);
+      const blobUrl = await createProtectedBlob(url);
+      
+      setPlayer({
+        url,
+        fileName,
+        isPlaying: false,
+        currentTime: 0,
+        duration: 0,
+        volume: 1,
+        isMuted: false,
+        isFullscreen: false,
+        showControls: true,
+        blobUrl
+      });
+
+      // Generate shareable link
+      const token = existingToken || generateToken();
+      const currentUrl = new URL(window.location.href);
+      currentUrl.searchParams.set('token', token);
+      currentUrl.searchParams.set('media', btoa(url));
+      
+      setShareableLink({
+        token,
+        url: currentUrl.toString(),
+        createdAt: new Date()
+      });
+
+      setShowShareSection(true);
+      setSuccess('Player carregado com sucesso!');
+
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Erro ao carregar mídia');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGeneratePlayer = () => {
+    loadMediaFromUrl(mediaUrl);
   };
 
   const formatTime = (seconds: number): string => {
@@ -135,72 +184,12 @@ function App() {
     }
   };
 
-  const handleLoadMedia = async () => {
-    setError('');
-    
-    if (!url.trim()) {
-      setError('Por favor, insira um URL');
-      return;
-    }
-
-    // Security checks
-    if (!checkDomainSecurity()) {
-      setError('Acesso negado: domínio não autorizado');
-      return;
-    }
-
-    if (!checkReferrerSecurity()) {
-      setError('Acesso negado: referrer não autorizado');
-      return;
-    }
-    
-    let decodedUrl: string;
-    try {
-      // Try to decode as base64 first, if it fails, use as regular URL
-      decodedUrl = url.includes('http') ? url : decodeUrl(url);
-    } catch {
-      decodedUrl = url;
-    }
-    
-    if (!isValidDirectLink(decodedUrl)) {
-      setError('Por favor, insira um link direto válido (terminando com .mp4, .mp3, etc.)');
-      return;
-    }
-
-    setIsLoading(true);
-    
-    try {
-      const fileName = extractFileName(decodedUrl);
-      const blobUrl = await createProtectedBlob(decodedUrl);
-      
-      setPlayer({
-        url: decodedUrl,
-        fileName,
-        isPlaying: false,
-        currentTime: 0,
-        duration: 0,
-        volume: 1,
-        isMuted: false,
-        isFullscreen: false,
-        showControls: true,
-        isProtected: true,
-        blobUrl
-      });
-
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'Erro ao carregar mídia');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const togglePlayPause = () => {
     if (!videoRef.current || !player) return;
     
     if (player.isPlaying) {
       videoRef.current.pause();
     } else {
-      // Restore blob URL if needed
       if (!videoRef.current.src && player.blobUrl) {
         videoRef.current.src = player.blobUrl;
       }
@@ -276,9 +265,28 @@ function App() {
     } : null);
   };
 
+  const copyShareLink = async () => {
+    if (!shareableLink) return;
+    
+    try {
+      await navigator.clipboard.writeText(shareableLink.url);
+      setSuccess('Link copiado com sucesso!');
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError('Erro ao copiar link');
+      setTimeout(() => setError(''), 3000);
+    }
+  };
+
+  const openShareLink = () => {
+    if (shareableLink) {
+      window.open(shareableLink.url, '_blank');
+    }
+  };
+
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
-      handleLoadMedia();
+      handleGeneratePlayer();
     }
   };
 
@@ -287,49 +295,6 @@ function App() {
     if (player?.volume > 0.5) return <Volume2 className="w-5 h-5" />;
     return <Volume1 className="w-5 h-5" />;
   };
-
-  // Security event listeners
-  useEffect(() => {
-    const handleContextMenu = (e: MouseEvent) => {
-      if (securityConfig.enableRightClickProtection) {
-        e.preventDefault();
-      }
-    };
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (securityConfig.enableDevToolsProtection) {
-        // Prevent F12, Ctrl+Shift+I, Ctrl+U
-        if (e.key === 'F12' || 
-            (e.ctrlKey && e.shiftKey && e.key === 'I') ||
-            (e.ctrlKey && e.key === 'u')) {
-          e.preventDefault();
-        }
-      }
-
-      if (securityConfig.enableCopyProtection) {
-        // Prevent Ctrl+C, Ctrl+A, Ctrl+S
-        if (e.ctrlKey && ['c', 'a', 's'].includes(e.key.toLowerCase())) {
-          e.preventDefault();
-        }
-      }
-    };
-
-    const handleBeforeUnload = () => {
-      if (player?.blobUrl) {
-        URL.revokeObjectURL(player.blobUrl);
-      }
-    };
-
-    document.addEventListener('contextmenu', handleContextMenu);
-    document.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
-    return () => {
-      document.removeEventListener('contextmenu', handleContextMenu);
-      document.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, [securityConfig, player]);
 
   // Cleanup blob URL when component unmounts
   useEffect(() => {
@@ -358,10 +323,11 @@ function App() {
 
     const handlePause = () => {
       setTimeout(() => {
-        if (videoRef.current?.paused && player.isProtected) {
+        if (videoRef.current?.paused) {
+          // Keep the blob URL but remove the src attribute for security
           videoRef.current.removeAttribute('src');
         }
-      }, 1000);
+      }, 2000);
     };
 
     videoRef.current.addEventListener('pause', handlePause);
@@ -373,113 +339,45 @@ function App() {
   }, [player]);
 
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100">
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-gray-100">
       <div className="container mx-auto px-4 py-8 max-w-6xl">
         {/* Header */}
         <div className="text-center mb-12">
-          <div className="flex items-center justify-center mb-4">
-            <div className="bg-green-600 p-3 rounded-full">
-              <Shield className="w-8 h-8 text-white" />
+          <div className="flex items-center justify-center mb-6">
+            <div className="bg-gradient-to-r from-red-600 to-red-500 p-4 rounded-full shadow-lg">
+              <Share2 className="w-10 h-10 text-white" />
             </div>
           </div>
-          <h1 className="text-4xl font-bold text-gray-100 mb-2">
-            Player Protegido
+          <h1 className="text-5xl font-bold bg-gradient-to-r from-red-400 to-red-600 bg-clip-text text-transparent mb-4">
+            Player Compartilhável
           </h1>
-          <p className="text-gray-400 text-lg">
-            Reprodução segura com proteções avançadas contra download
+          <p className="text-gray-400 text-xl max-w-2xl mx-auto">
+            Carregue seus vídeos e gere links compartilháveis com proteção avançada contra download
           </p>
         </div>
 
-        {/* Security Settings */}
-        <div className="bg-gray-800 rounded-2xl shadow-xl p-6 mb-8 border border-gray-700">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-semibold text-gray-100 flex items-center gap-2">
-              <Lock className="w-5 h-5" />
-              Configurações de Segurança
+        {/* Input Section */}
+        <div className="bg-gray-800/50 backdrop-blur-sm rounded-3xl shadow-2xl p-8 mb-8 border border-gray-700/50">
+          <div className="flex items-center gap-3 mb-6">
+            <Link className="w-6 h-6 text-red-400" />
+            <h2 className="text-2xl font-semibold text-gray-100">
+              Insira o Link da Mídia
             </h2>
-            <button
-              onClick={() => setShowSecuritySettings(!showSecuritySettings)}
-              className="text-gray-400 hover:text-gray-200 transition-colors"
-            >
-              {showSecuritySettings ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-            </button>
           </div>
           
-          {showSecuritySettings && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <label className="flex items-center gap-3 p-3 bg-gray-700 rounded-lg">
-                <input
-                  type="checkbox"
-                  checked={securityConfig.enableRightClickProtection}
-                  onChange={(e) => setSecurityConfig(prev => ({
-                    ...prev,
-                    enableRightClickProtection: e.target.checked
-                  }))}
-                  className="w-4 h-4 text-green-600 bg-gray-600 border-gray-500 rounded focus:ring-green-500"
-                />
-                <span className="text-sm text-gray-300">Bloquear clique direito</span>
-              </label>
-              
-              <label className="flex items-center gap-3 p-3 bg-gray-700 rounded-lg">
-                <input
-                  type="checkbox"
-                  checked={securityConfig.enableDevToolsProtection}
-                  onChange={(e) => setSecurityConfig(prev => ({
-                    ...prev,
-                    enableDevToolsProtection: e.target.checked
-                  }))}
-                  className="w-4 h-4 text-green-600 bg-gray-600 border-gray-500 rounded focus:ring-green-500"
-                />
-                <span className="text-sm text-gray-300">Bloquear ferramentas de desenvolvedor</span>
-              </label>
-              
-              <label className="flex items-center gap-3 p-3 bg-gray-700 rounded-lg">
-                <input
-                  type="checkbox"
-                  checked={securityConfig.enableCopyProtection}
-                  onChange={(e) => setSecurityConfig(prev => ({
-                    ...prev,
-                    enableCopyProtection: e.target.checked
-                  }))}
-                  className="w-4 h-4 text-green-600 bg-gray-600 border-gray-500 rounded focus:ring-green-500"
-                />
-                <span className="text-sm text-gray-300">Bloquear copiar/colar</span>
-              </label>
-              
-              <label className="flex items-center gap-3 p-3 bg-gray-700 rounded-lg">
-                <input
-                  type="checkbox"
-                  checked={securityConfig.enableDomainCheck}
-                  onChange={(e) => setSecurityConfig(prev => ({
-                    ...prev,
-                    enableDomainCheck: e.target.checked
-                  }))}
-                  className="w-4 h-4 text-green-600 bg-gray-600 border-gray-500 rounded focus:ring-green-500"
-                />
-                <span className="text-sm text-gray-300">Verificar domínio autorizado</span>
-              </label>
-            </div>
-          )}
-        </div>
-
-        {/* Input Section */}
-        <div className="bg-gray-800 rounded-2xl shadow-xl p-8 mb-8 border border-gray-700">
-          <h2 className="text-xl font-semibold text-gray-100 mb-4">
-            Insira URL do vídeo (URL direta ou Base64)
-          </h2>
-          <div className="flex flex-col sm:flex-row gap-4">
+          <div className="flex flex-col sm:flex-row gap-4 mb-4">
             <input
               type="text"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              value={mediaUrl}
+              onChange={(e) => setMediaUrl(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="https://example.com/video.mp4 ou aHR0cHM6Ly9leGFtcGxlLmNvbS92aWRlby5tcDQ="
-              className="flex-1 px-6 py-4 text-lg bg-gray-900 border-2 border-gray-600 rounded-full text-gray-100 placeholder-gray-500 focus:ring-4 focus:ring-green-500/20 focus:border-green-500 transition-all duration-200 outline-none"
+              placeholder="https://download.mediafire.com/.../video.mp4"
+              className="flex-1 px-6 py-4 text-lg bg-gray-900/50 border-2 border-gray-600 rounded-2xl text-gray-100 placeholder-gray-500 focus:ring-4 focus:ring-red-500/20 focus:border-red-500 transition-all duration-200 outline-none backdrop-blur-sm"
             />
             <button
-              onClick={handleLoadMedia}
+              onClick={handleGeneratePlayer}
               disabled={isLoading}
-              className="bg-green-600 hover:bg-green-700 text-white font-semibold py-4 px-8 rounded-full transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 min-w-[200px]"
+              className="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white font-semibold py-4 px-8 rounded-2xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 min-w-[200px] shadow-lg"
             >
               {isLoading ? (
                 <>
@@ -489,16 +387,27 @@ function App() {
               ) : (
                 <>
                   <Play className="w-5 h-5" />
-                  Carregar Vídeo
+                  Gerar Player
                 </>
               )}
             </button>
           </div>
           
+          <p className="text-sm text-gray-500">
+            Suporta links diretos do Mediafire, Google Drive e outros serviços de hospedagem
+          </p>
+          
           {error && (
-            <div className="mt-4 p-4 bg-red-900/50 border border-red-700 rounded-xl flex items-center gap-3">
+            <div className="mt-4 p-4 bg-red-900/50 border border-red-700/50 rounded-xl flex items-center gap-3 backdrop-blur-sm">
               <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0" />
               <p className="text-red-300">{error}</p>
+            </div>
+          )}
+          
+          {success && (
+            <div className="mt-4 p-4 bg-green-900/50 border border-green-700/50 rounded-xl flex items-center gap-3 backdrop-blur-sm">
+              <CheckCircle className="w-5 h-5 text-green-400 flex-shrink-0" />
+              <p className="text-green-300">{success}</p>
             </div>
           )}
         </div>
@@ -507,22 +416,21 @@ function App() {
         {player && (
           <div className="mb-8">
             {/* Video Title */}
-            <div className="bg-gray-800 rounded-t-2xl px-6 py-4 border-b border-gray-700 flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-gray-100 truncate">
+            <div className="bg-gray-800/50 backdrop-blur-sm rounded-t-3xl px-6 py-4 border-b border-gray-700/50 flex items-center justify-between">
+              <h2 className="text-xl font-semibold text-gray-100 truncate flex items-center gap-3">
+                <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
                 {player.fileName}
               </h2>
-              {player.isProtected && (
-                <div className="flex items-center gap-2 text-green-400">
-                  <Shield className="w-5 h-5" />
-                  <span className="text-sm font-medium">Protegido</span>
-                </div>
-              )}
+              <div className="flex items-center gap-2 text-green-400">
+                <Shield className="w-5 h-5" />
+                <span className="text-sm font-medium">Protegido</span>
+              </div>
             </div>
 
             {/* Video Player */}
             <div 
               ref={playerRef}
-              className="relative bg-black rounded-b-2xl overflow-hidden shadow-2xl group"
+              className="relative bg-black rounded-b-3xl overflow-hidden shadow-2xl group"
               onMouseMove={showControls}
               onMouseLeave={() => {
                 if (controlsTimeoutRef.current) {
@@ -549,7 +457,7 @@ function App() {
 
                 {/* Player Controls */}
                 <div 
-                  className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-6 transition-opacity duration-300 ${
+                  className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-6 transition-opacity duration-300 ${
                     player.showControls ? 'opacity-100' : 'opacity-0'
                   }`}
                 >
@@ -559,10 +467,10 @@ function App() {
                     onClick={handleSeek}
                   >
                     <div 
-                      className="h-full bg-green-600 rounded-full relative group-hover/progress:bg-green-500 transition-colors"
+                      className="h-full bg-gradient-to-r from-red-500 to-red-600 rounded-full relative group-hover/progress:from-red-400 group-hover/progress:to-red-500 transition-all duration-200"
                       style={{ width: `${(player.currentTime / player.duration) * 100 || 0}%` }}
                     >
-                      <div className="absolute right-0 top-1/2 transform translate-x-1/2 -translate-y-1/2 w-4 h-4 bg-green-600 rounded-full opacity-0 group-hover/progress:opacity-100 transition-opacity"></div>
+                      <div className="absolute right-0 top-1/2 transform translate-x-1/2 -translate-y-1/2 w-4 h-4 bg-red-500 rounded-full opacity-0 group-hover/progress:opacity-100 transition-opacity shadow-lg"></div>
                     </div>
                   </div>
 
@@ -572,7 +480,7 @@ function App() {
                       {/* Play/Pause */}
                       <button
                         onClick={togglePlayPause}
-                        className="text-white hover:text-green-400 transition-colors p-2"
+                        className="text-white hover:text-red-400 transition-colors p-2 hover:bg-white/10 rounded-full"
                       >
                         {player.isPlaying ? (
                           <Pause className="w-6 h-6" />
@@ -585,7 +493,7 @@ function App() {
                       <div className="flex items-center gap-2 group/volume">
                         <button
                           onClick={toggleMute}
-                          className="text-white hover:text-green-400 transition-colors p-2"
+                          className="text-white hover:text-red-400 transition-colors p-2 hover:bg-white/10 rounded-full"
                         >
                           {getVolumeIcon()}
                         </button>
@@ -601,7 +509,7 @@ function App() {
                       </div>
 
                       {/* Time Display */}
-                      <div className="text-white text-sm font-mono">
+                      <div className="text-white text-sm font-mono bg-black/30 px-3 py-1 rounded-full">
                         {formatTime(player.currentTime)} / {formatTime(player.duration)}
                       </div>
                     </div>
@@ -610,7 +518,7 @@ function App() {
                       {/* Fullscreen */}
                       <button
                         onClick={toggleFullscreen}
-                        className="text-white hover:text-green-400 transition-colors p-2"
+                        className="text-white hover:text-red-400 transition-colors p-2 hover:bg-white/10 rounded-full"
                       >
                         {player.isFullscreen ? (
                           <Minimize className="w-5 h-5" />
@@ -626,24 +534,92 @@ function App() {
           </div>
         )}
 
+        {/* Share Section */}
+        {showShareSection && shareableLink && (
+          <div className="bg-gray-800/50 backdrop-blur-sm rounded-3xl shadow-2xl p-8 mb-8 border border-gray-700/50">
+            <div className="flex items-center gap-3 mb-6">
+              <Share2 className="w-6 h-6 text-red-400" />
+              <h2 className="text-2xl font-semibold text-gray-100">
+                Link Compartilhável
+              </h2>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row gap-3">
+                <input
+                  type="text"
+                  value={shareableLink.url}
+                  readOnly
+                  className="flex-1 px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-xl text-gray-300 text-sm font-mono"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={copyShareLink}
+                    className="bg-gray-700 hover:bg-gray-600 text-white px-6 py-3 rounded-xl transition-colors flex items-center gap-2"
+                  >
+                    <Copy className="w-4 h-4" />
+                    Copiar
+                  </button>
+                  <button
+                    onClick={openShareLink}
+                    className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-xl transition-colors flex items-center gap-2"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    Abrir
+                  </button>
+                </div>
+              </div>
+              
+              <div className="text-sm text-gray-400">
+                <p>• Link gerado em: {shareableLink.createdAt.toLocaleString('pt-BR')}</p>
+                <p>• Token: {shareableLink.token}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Security Features Info */}
-        <div className="bg-gradient-to-r from-gray-800 to-gray-700 rounded-2xl p-8 border border-gray-600">
-          <h3 className="text-xl font-bold text-gray-100 mb-4 flex items-center gap-2">
-            <Shield className="w-6 h-6 text-green-400" />
-            Recursos de Proteção Ativados:
+        <div className="bg-gradient-to-r from-gray-800/50 to-gray-700/50 backdrop-blur-sm rounded-3xl p-8 border border-gray-600/50">
+          <h3 className="text-2xl font-bold text-gray-100 mb-6 flex items-center gap-3">
+            <Shield className="w-7 h-7 text-red-400" />
+            Recursos de Proteção:
           </h3>
-          <ul className="list-disc list-inside space-y-2 text-gray-300">
-            <li>Carregamento via Blob URL para ocultar URL original</li>
-            <li>Remoção automática do src quando pausado</li>
-            <li>Proteção contra clique direito e menu de contexto</li>
-            <li>Bloqueio de ferramentas de desenvolvedor (F12, Ctrl+Shift+I)</li>
-            <li>Prevenção de cópia e download direto</li>
-            <li>Verificação de domínio e referrer (opcional)</li>
-            <li>Limpeza automática de recursos ao sair da página</li>
-          </ul>
-          <p className="mt-4 text-sm text-gray-400">
-            <strong>Nota:</strong> Estas proteções dificultam significativamente o download não autorizado, mas não são 100% infalíveis contra usuários muito técnicos.
-          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-3">
+              <div className="flex items-center gap-3 text-gray-300">
+                <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                <span>Carregamento via Blob URL protegido</span>
+              </div>
+              <div className="flex items-center gap-3 text-gray-300">
+                <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                <span>Remoção automática do src quando pausado</span>
+              </div>
+              <div className="flex items-center gap-3 text-gray-300">
+                <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                <span>Links compartilháveis com tokens únicos</span>
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-center gap-3 text-gray-300">
+                <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                <span>Prevenção de download direto</span>
+              </div>
+              <div className="flex items-center gap-3 text-gray-300">
+                <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                <span>Limpeza automática de recursos</span>
+              </div>
+              <div className="flex items-center gap-3 text-gray-300">
+                <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+                <span>Interface responsiva e moderna</span>
+              </div>
+            </div>
+          </div>
+          <div className="mt-6 p-4 bg-yellow-900/20 border border-yellow-700/50 rounded-xl">
+            <p className="text-sm text-yellow-300">
+              <strong>Nota:</strong> Estas proteções dificultam significativamente o download não autorizado, 
+              mas não são 100% infalíveis contra usuários muito técnicos. Use em conjunto com outras medidas de segurança.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -653,20 +629,20 @@ function App() {
           width: 16px;
           height: 16px;
           border-radius: 50%;
-          background: #16a34a;
+          background: linear-gradient(45deg, #dc2626, #ef4444);
           cursor: pointer;
           border: 2px solid #ffffff;
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+          box-shadow: 0 2px 8px rgba(220, 38, 38, 0.3);
         }
         
         .slider::-moz-range-thumb {
           width: 16px;
           height: 16px;
           border-radius: 50%;
-          background: #16a34a;
+          background: linear-gradient(45deg, #dc2626, #ef4444);
           cursor: pointer;
           border: 2px solid #ffffff;
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+          box-shadow: 0 2px 8px rgba(220, 38, 38, 0.3);
         }
       `}</style>
     </div>
